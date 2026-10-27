@@ -31,7 +31,7 @@
 2. เปิดแอป Termux แล้วคัดลอกคำสั่งด้านล่างไปวาง:
 
 ```bash
-pkg install -y git curl && git clone https://github.com/<your-username>/mumblebox.git && cd mumblebox && bash install.sh
+pkg install -y git curl && git clone https://github.com/mtts6115/MumbleBox.git && cd mumblebox && bash install.sh
 ```
 *(หรือหากอัปโหลดขึ้น GitHub แล้ว สามารถใช้ `curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash` ได้ทันที)*
 
