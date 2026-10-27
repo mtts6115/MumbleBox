@@ -48,7 +48,7 @@ pkg install -y git curl && git clone https://github.com/<your-username>/mumblebo
 
 หากกล่องของคุณใช้ชิป Amlogic/Rockchip และแฟลชเป็น Armbian:
 ```bash
-git clone https://github.com/<your-username>/mumblebox.git
+git clone https://github.com/mtts6115/MumbleBox.git
 cd mumblebox
 sudo bash install.sh
 ```
