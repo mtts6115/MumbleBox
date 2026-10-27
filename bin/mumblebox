@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# MumbleBox CLI Controller
+# Management utility for Mumble Server on Android (Termux) & Linux
+# ==============================================================================
+
+set -e
+
+# Styling
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Detect Environment
+if [ -n "$PREFIX" ] && [ -d "$PREFIX" ] && [[ "$PREFIX" == *"com.termux"* ]]; then
+    ENV_MODE="termux"
+    DATA_DIR="$HOME/.mumblebox"
+    PROOT_DISTRO="debian"
+    CONF_FILE="$DATA_DIR/mumble-server.ini"
+    LOG_FILE="$DATA_DIR/mumble-server.log"
+    DB_FILE="$DATA_DIR/mumble-server.sqlite"
+else
+    ENV_MODE="linux"
+    DATA_DIR="/var/lib/mumblebox"
+    CONF_FILE="/etc/mumble-server.ini"
+    LOG_FILE="/var/log/mumble-server/mumble-server.log"
+    DB_FILE="/var/lib/mumble-server/mumble-server.sqlite"
+fi
+
+get_pid() {
+    if [ "$ENV_MODE" = "termux" ]; then
+        pgrep -f "murmurd" | head -n 1 || true
+    else
+        systemctl is-active --quiet mumble-server 2>/dev/null && pgrep -f "murmurd" | head -n 1 || true
+    fi
+}
+
+is_running() {
+    local pid
+    pid=$(get_pid)
+    [ -n "$pid" ]
+}
+
+banner() {
+    echo -e "${CYAN}${BOLD}"
+    echo "  __  __                 _     _      ____            "
+    echo " |  \/  |_   _ _ __ ___ | |__ | | ___| __ )  _____  __"
+    echo " | |\/| | | | | '_ \` _ \| '_ \| |/ _ \  _ \ / _ \ \/ /"
+    echo " | |  | | |_| | | | | | | |_) | |  __/ |_) | (_) >  < "
+    echo " |_|  |_|\__,_|_| |_| |_|_.__/|_|\___|____/ \___/_/\_\\"
+    echo -e "${NC}"
+}
+
+cmd_start() {
+    if is_running; then
+        echo -e "${YELLOW}[!] Mumble Server is already running (PID: $(get_pid))${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}[*] Starting Mumble Server...${NC}"
+
+    if [ "$ENV_MODE" = "termux" ]; then
+        # Ensure wake lock is active on Android
+        if command -v termux-wake-lock >/dev/null 2>&1; then
+            termux-wake-lock
+        fi
+        
+        # Start via proot-distro
+        proot-distro login "$PROOT_DISTRO" -- murmurd -ini "$CONF_FILE"
+    else
+        if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl start mumble-server
+        else
+            sudo murmurd -ini "$CONF_FILE"
+        fi
+    fi
+
+    sleep 1.5
+    if is_running; then
+        echo -e "${GREEN}[✔] Mumble Server started successfully! (PID: $(get_pid))${NC}"
+    else
+        echo -e "${RED}[✘] Failed to start Mumble Server. Check logs: 'mumblebox logs'${NC}"
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    if ! is_running; then
+        echo -e "${YELLOW}[!] Mumble Server is not running.${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}[*] Stopping Mumble Server...${NC}"
+
+    if [ "$ENV_MODE" = "termux" ]; then
+        pkill -f "murmurd" || true
+    else
+        if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl stop mumble-server
+        else
+            sudo pkill -f "murmurd" || true
+        fi
+    fi
+
+    sleep 1
+    if ! is_running; then
+        echo -e "${GREEN}[✔] Mumble Server stopped.${NC}"
+    else
+        echo -e "${RED}[!] Force killing murmurd process...${NC}"
+        pkill -9 -f "murmurd" || true
+        echo -e "${GREEN}[✔] Stopped.${NC}"
+    fi
+}
+
+cmd_restart() {
+    echo -e "${BLUE}[*] Restarting Mumble Server...${NC}"
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_status() {
+    banner
+    echo -e "${BOLD}--- System Status ---${NC}"
+    echo -e "Environment : ${CYAN}$ENV_MODE${NC}"
+
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        echo -e "Status      : ${GREEN}${BOLD}RUNNING${NC} (PID: $pid)"
+        
+        # Memory usage
+        if command -v ps >/dev/null 2>&1; then
+            local mem
+            mem=$(ps -o rss= -p "$pid" 2>/dev/null | awk '{printf "%.2f MB", $1/1024}' || echo "N/A")
+            echo -e "Memory Usage: ${CYAN}$mem${NC}"
+        fi
+    else
+        echo -e "Status      : ${RED}${BOLD}STOPPED${NC}"
+    fi
+
+    echo -e "Config File : $CONF_FILE"
+    echo -e "Database    : $DB_FILE"
+    echo ""
+}
+
+cmd_info() {
+    banner
+    echo -e "${BOLD}=== Connection Information ===${NC}"
+    
+    # Extract port from config
+    local port=64738
+    if [ -f "$CONF_FILE" ]; then
+        local cfg_port
+        cfg_port=$(grep -E "^port=" "$CONF_FILE" | cut -d'=' -f2 | tr -d ' ' || true)
+        if [ -n "$cfg_port" ]; then
+            port="$cfg_port"
+        fi
+    fi
+
+    # Local IP detection
+    local local_ip
+    local_ip=$(ip route get 1.1.1.1 2>/dev/null | awk -F"src " 'NR==1{split($2,a," ");print a[1]}' || echo "127.0.0.1")
+
+    # Public IP detection (optional timeout to prevent hanging)
+    local public_ip
+    public_ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "Unable to detect")
+
+    echo -e "Port               : ${GREEN}${BOLD}$port${NC} (TCP & UDP)"
+    echo -e "Local LAN Address  : ${CYAN}${BOLD}$local_ip:$port${NC}"
+    echo -e "Public IP Address  : ${YELLOW}${BOLD}$public_ip:$port${NC}"
+    echo ""
+    echo -e "${BOLD}Direct Join URL (LAN):${NC}"
+    echo -e "${GREEN}mumble://$local_ip:$port${NC}"
+    echo ""
+    if [ "$public_ip" != "Unable to detect" ]; then
+        echo -e "${BOLD}Direct Join URL (Internet):${NC}"
+        echo -e "${YELLOW}mumble://$public_ip:$port${NC}"
+        echo -e "${BLUE}(Note: Requires Port 64738 forwarded on your router)${NC}"
+        echo ""
+    fi
+}
+
+cmd_passwd() {
+    echo -e "${BLUE}[*] Setting SuperUser Password...${NC}"
+    read -rsp "Enter new SuperUser password: " pass1
+    echo ""
+    read -rsp "Confirm new SuperUser password: " pass2
+    echo ""
+
+    if [ "$pass1" != "$pass2" ]; then
+        echo -e "${RED}[✘] Passwords do not match. Aborted.${NC}"
+        exit 1
+    fi
+
+    if [ -z "$pass1" ]; then
+        echo -e "${RED}[✘] Password cannot be empty.${NC}"
+        exit 1
+    fi
+
+    if [ "$ENV_MODE" = "termux" ]; then
+        proot-distro login "$PROOT_DISTRO" -- murmurd -ini "$CONF_FILE" -supw "$pass1"
+    else
+        sudo murmurd -ini "$CONF_FILE" -supw "$pass1"
+    fi
+
+    echo -e "${GREEN}[✔] SuperUser password updated successfully!${NC}"
+    echo -e "Username: ${BOLD}SuperUser${NC}"
+}
+
+cmd_logs() {
+    if [ -f "$LOG_FILE" ]; then
+        tail -n 50 -f "$LOG_FILE"
+    else
+        echo -e "${YELLOW}[!] Log file not found at: $LOG_FILE${NC}"
+        if [ "$ENV_MODE" = "linux" ] && command -v journalctl >/dev/null 2>&1; then
+            echo -e "${BLUE}[*] Checking systemd journal logs...${NC}"
+            journalctl -u mumble-server -n 50 -f
+        fi
+    fi
+}
+
+cmd_config() {
+    local editor="${EDITOR:-nano}"
+    if ! command -v "$editor" >/dev/null 2>&1; then
+        editor="vi"
+    fi
+    echo -e "${BLUE}[*] Opening config file with $editor...${NC}"
+    if [ "$ENV_MODE" = "linux" ]; then
+        sudo "$editor" "$CONF_FILE"
+    else
+        "$editor" "$CONF_FILE"
+    fi
+    echo -e "${YELLOW}[!] Remember to run 'mumblebox restart' to apply changes.${NC}"
+}
+
+cmd_backup() {
+    local backup_name="mumblebox_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+    local target_dir="$HOME"
+    
+    echo -e "${BLUE}[*] Creating backup to $target_dir/$backup_name...${NC}"
+    
+    if [ "$ENV_MODE" = "termux" ]; then
+        tar -czf "$target_dir/$backup_name" -C "$HOME" ".mumblebox"
+    else
+        sudo tar -czf "$target_dir/$backup_name" "$CONF_FILE" "$DB_FILE"
+    fi
+
+    echo -e "${GREEN}[✔] Backup created successfully: $target_dir/$backup_name${NC}"
+}
+
+usage() {
+    banner
+    echo -e "${BOLD}Usage:${NC} mumblebox <command>"
+    echo ""
+    echo -e "${BOLD}Commands:${NC}"
+    echo -e "  ${CYAN}start${NC}       Start the Mumble server"
+    echo -e "  ${CYAN}stop${NC}        Stop the Mumble server"
+    echo -e "  ${CYAN}restart${NC}     Restart the Mumble server"
+    echo -e "  ${CYAN}status${NC}      Check server status and memory usage"
+    echo -e "  ${CYAN}info${NC}        Show connection IP, port, and join URL"
+    echo -e "  ${CYAN}passwd${NC}      Change SuperUser administrator password"
+    echo -e "  ${CYAN}logs${NC}        Stream live server logs"
+    echo -e "  ${CYAN}config${NC}      Edit server configuration file"
+    echo -e "  ${CYAN}backup${NC}      Create a compressed backup of settings & database"
+    echo ""
+}
+
+case "$1" in
+    start)
+        cmd_start
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    restart)
+        cmd_restart
+        ;;
+    status)
+        cmd_status
+        ;;
+    info)
+        cmd_info
+        ;;
+    passwd|password)
+        cmd_passwd
+        ;;
+    logs|log)
+        cmd_logs
+        ;;
+    config|conf)
+        cmd_config
+        ;;
+    backup)
+        cmd_backup
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac
+
